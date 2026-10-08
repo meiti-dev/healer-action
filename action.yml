@@ -44,6 +44,10 @@ inputs:
     description: '"pro" (default) repara con las APIs pagas (Claude / Gemini Pro). "free" usa la cadena de proveedores gratis (Groq, NVIDIA y Gemini): sin costo de IA, más lento y menos preciso en código difícil. En "free" el código puede reusarse para reentrenar los modelos de MEITI y de esos proveedores; para código privado, "pro".'
     required: false
     default: 'pro'
+  timeout-minutes:
+    description: 'Cuántos minutos esperar el resultado. Default: 60 con ai-level "free", 30 con "pro". Si se agota, el job sigue en Healer y su resultado queda en el panel. Dale al job del workflow más tiempo que esto.'
+    required: false
+    default: ''
   fail-on:
     description: '"unresolved" (default) marca el paso como fallido si Sanador no pudo dejar el código limpio o si el lenguaje no está soportado (unsupported_stack). "never" nunca falla el paso — útil para correr solo informativo.'
     required: false

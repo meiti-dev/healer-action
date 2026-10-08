@@ -86,6 +86,7 @@ If the code ends `unresolved`, the step fails, like any other CI gate.
 | `max-iterations` | `8` | Maximum repair rounds per run. |
 | `test-uso-real` | `false` | `true` to also run the real-use test. |
 | `start-command` / `port` | — | How your dev server starts, for the real-use test. |
+| `timeout-minutes` | `60` free, `30` pro | How long to wait for the result. If it runs out, the job keeps going in Healer and its result stays in the panel. Give the workflow job more time than this. |
 | `fail-on` | `unresolved` | `never` to only report, without failing the step. |
 | `base-url` | `https://healer-api.meiti.dev` | Change only to point to your own instance. |
 

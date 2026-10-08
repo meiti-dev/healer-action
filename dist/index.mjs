@@ -20076,8 +20076,14 @@ async function main() {
   const port = puertoTexto ? Number(puertoTexto) : void 0;
   const failOn = entrada("fail-on", "HEALER_FAIL_ON") || "unresolved";
   const aiLevel = entrada("ai-level", "HEALER_AI_LEVEL") || "pro";
+  const minutosTexto = entrada("timeout-minutes", "HEALER_TIMEOUT_MINUTES");
+  const minutos = minutosTexto ? Number(minutosTexto) : aiLevel === "free" ? 60 : 30;
   if (!apiKey) {
     import_core.default.setFailed('Falta la API key de Healer. Gu\xE1rdala en el repo como secreto (Settings \u2192 Secrets and variables \u2192 Actions, por ejemplo HEALER_API_KEY) y p\xE1sala en "api-key". Si el workflow corre desde el fork de otra persona, GitHub no le entrega los secretos.');
+    return;
+  }
+  if (!Number.isFinite(minutos) || minutos <= 0) {
+    import_core.default.setFailed(`"timeout-minutes" tiene que ser un n\xFAmero de minutos (vino "${minutosTexto}").`);
     return;
   }
   if (!["free", "pro"].includes(aiLevel)) {
@@ -20093,7 +20099,7 @@ async function main() {
     import_core.default.setFailed('No se encontr\xF3 ning\xFAn archivo de texto para enviar (\xBF"path" apunta a la carpeta correcta?).');
     return;
   }
-  const healer = new HealerClient({ apiKey, baseUrl, timeoutMs: 20 * 60 * 1e3 });
+  const healer = new HealerClient({ apiKey, baseUrl, timeoutMs: minutos * 60 * 1e3 });
   let resultado;
   try {
     resultado = await healer.repair({ files, appId, appIntent, maxIterations, testUsoReal, startCommand, port, aiLevel });
@@ -20101,7 +20107,9 @@ async function main() {
     if (error instanceof HealerApiError) {
       import_core.default.setFailed(`Healer devolvi\xF3 un error (HTTP ${error.status}): ${error.message}`);
     } else if (error instanceof HealerTimeoutError) {
-      import_core.default.setFailed(`Healer no termin\xF3 a tiempo: ${error.message}`);
+      const texto = `Healer no termin\xF3 en ${minutos} minutos; el job sigue y su resultado queda en el panel de Healer. ${error.message}`;
+      if (failOn === "never") import_core.default.warning(texto);
+      else import_core.default.setFailed(texto);
     } else {
       import_core.default.setFailed(`Fallo inesperado llamando a Healer: ${error.message}`);
     }
