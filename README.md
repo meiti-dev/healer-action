@@ -33,6 +33,14 @@ jobs:
 
 If the code ends `unresolved`, the step fails, like any other CI gate.
 
+## Partial delivery
+
+When Healer fixes some failures but others remain, it still writes the repaired files to the workspace
+(`partial-fix` output is `true`). Nothing is left worse, and what remains already failed in your original
+code. The job summary lists the failures found, fixed and remaining. The status stays `unresolved`, so with
+the default `fail-on` the step still fails, and your workflow decides whether to open a PR with the partial
+repair.
+
 ## Free or pro AI
 
 ```yaml
@@ -67,8 +75,8 @@ If the code ends `unresolved`, the step fails, like any other CI gate.
 - Writes back **only the files Healer repaired** (`changed-files` output), and only if the checkout
   is still the code that was sent (verified by SHA-256 of every file). Everything else stays
   byte-for-byte identical.
-- Reports `status`, repairs, Pentágono score and pending improvements as outputs and as a summary
-  in the Actions tab.
+- Reports `status`, failures found and fixed, repairs, Pentágono score and pending improvements as
+  outputs and as a summary in the Actions tab.
 - **Never commits or pushes.** What to do with the result is up to your workflow: fail the build,
   just report, or open a PR with a step like
   [`peter-evans/create-pull-request`](https://github.com/peter-evans/create-pull-request), which
@@ -88,6 +96,7 @@ If the code ends `unresolved`, the step fails, like any other CI gate.
 | `start-command` / `port` | — | How your dev server starts, for the real-use test. |
 | `timeout-minutes` | `60` free, `30` pro | How long to wait for the result. If it runs out, the job keeps going in Healer and its result stays in the panel. Give the workflow job more time than this. |
 | `fail-on` | `unresolved` | `never` to only report, without failing the step. |
+| `apply-support-updates` | `true` | If Healer had to raise dependency versions so the app runs on the current runtime (a support update), `true` writes them together with the repair. `false` writes only the bug repair. |
 | `base-url` | `https://healer-api.meiti.dev` | Change only to point to your own instance. |
 
 ## Outputs
@@ -99,6 +108,9 @@ If the code ends `unresolved`, the step fails, like any other CI gate.
 | `changed-files` | Files repaired and written to the workspace, one per line. |
 | `pentagono-score` | Pentágono score, 0 to 100. |
 | `app-id` | The app id used. |
+| `partial-fix` | `true` when some failures were fixed and others remain (status `unresolved`, files written). |
+| `failures-found` | Failures found. |
+| `failures-fixed` | Failures fixed. |
 
 ## Español
 
@@ -116,5 +128,8 @@ nunca se usa para entrenar. Para código privado, usa `pro`.
 
 La Action escribe de vuelta **solo los archivos reparados** y solo si tu checkout sigue siendo el
 código que se mandó. Nunca hace commit ni push: lo que haces con el resultado lo decide tu workflow.
+
+Si Healer corrige algunas fallas y quedan otras, igual escribe lo reparado (`partial-fix: true`). Nada
+queda peor, y lo que queda ya fallaba en tu código original.
 
 Documentación completa: [meiti.dev/healer](https://meiti.dev/healer).

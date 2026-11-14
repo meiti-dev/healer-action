@@ -19828,7 +19828,7 @@ var HealerApiError = class extends Error {
   status;
   body;
   constructor(status, body) {
-    const mensaje = body?.error || `Healer devolvi\xF3 el estado HTTP ${status}.`;
+    const mensaje = body?.error || `Healer returned HTTP status ${status}.`;
     super(mensaje);
     this.name = "HealerApiError";
     this.status = status;
@@ -19837,7 +19837,7 @@ var HealerApiError = class extends Error {
 };
 var HealerTimeoutError = class extends Error {
   constructor(jobId, timeoutMs) {
-    super(`El job "${jobId}" no termin\xF3 dentro de ${timeoutMs}ms. Sigue consultando con getRepair("${jobId}") si quieres esperar m\xE1s.`);
+    super(`Job "${jobId}" did not finish within ${timeoutMs}ms. Keep polling with getRepair("${jobId}") if you want to wait longer.`);
     this.name = "HealerTimeoutError";
   }
 };
@@ -19862,7 +19862,7 @@ var HealerClient = class {
   timeoutMs;
   constructor(options) {
     if (!options?.apiKey) {
-      throw new Error('HealerClient necesita "apiKey".');
+      throw new Error('HealerClient needs "apiKey".');
     }
     this.apiKey = options.apiKey;
     this.baseUrl = (options.baseUrl || "https://healer-api.meiti.dev").replace(/\/+$/, "");
@@ -19892,10 +19892,15 @@ var HealerClient = class {
   async getRepair(jobId) {
     return this.pedir("GET", `/v1/repair/${encodeURIComponent(jobId)}`);
   }
+  /** Le cuenta a Healer qué archivos de su reparación se aplicaron y cuáles se dejaron afuera (desde 2026-11-11).
+   * Opcional: sirve para medir qué cambios valen la pena. Healer guarda solo huellas de las rutas, nunca código. */
+  async informarDecision(jobId, decision) {
+    return this.pedir("POST", `/v1/repair/${encodeURIComponent(jobId)}/decision`, { aplicados: decision.aplicados ?? [], descartados: decision.descartados ?? [], via: "sdk" });
+  }
   /** Envía el código y ESPERA el resultado final, consultando el estado sola — la forma más
    * simple de usar Healer. Tira HealerApiError si el job termina en "error", o HealerTimeoutError
    * si se agota "timeoutMs" sin que el job termine. */
-  async repair(request) {
+  async repair(request, opciones = {}) {
     const envio = await this.submitRepair(request);
     const limite = Date.now() + this.timeoutMs;
     while (Date.now() < limite) {
@@ -19906,6 +19911,8 @@ var HealerClient = class {
       if (estado.status === "production_ready" || estado.status === "unresolved" || estado.status === "unsupported_stack") {
         return estado;
       }
+      if (opciones.onProgress && "progress" in estado && estado.progress)
+        opciones.onProgress(estado.progress);
       await new Promise((resolver) => setTimeout(resolver, this.pollIntervalMs));
     }
     throw new HealerTimeoutError(envio.job_id, this.timeoutMs);
@@ -19926,7 +19933,7 @@ var ErrorBaseModificada = class extends Error {
 function verificarBase(archivosActuales, resultado) {
   const base = resultado.base_hashes;
   if (!base) {
-    return { coincide: false, modificados: [], faltantes: [], mensaje: "Este resultado no trae la huella del c\xF3digo original (base_hashes), as\xED que no se puede verificar." };
+    return { coincide: false, modificados: [], faltantes: [], mensaje: "This result has no fingerprint of the original code (base_hashes), so it cannot be verified." };
   }
   const modificados = [];
   const faltantes = [];
@@ -19942,18 +19949,26 @@ function verificarBase(archivosActuales, resultado) {
     coincide,
     modificados,
     faltantes,
-    mensaje: coincide ? "Tu app es exactamente la que se mand\xF3 a reparar: la reparaci\xF3n se puede aplicar." : `Esta app fue modificada desde que la mandaste a reparar: ya no es la original (${[...modificados, ...faltantes].slice(0, 5).join(", ")}${modificados.length + faltantes.length > 5 ? "\u2026" : ""}). Puedes aplicar la reparaci\xF3n bajo tu responsabilidad, o volver a mandarla a reparaci\xF3n para que se revise sobre la versi\xF3n actual.`
+    mensaje: coincide ? "Your code is exactly what was sent for repair: the repair can be applied." : `This code changed after it was sent for repair (${[...modificados, ...faltantes].slice(0, 5).join(", ")}${modificados.length + faltantes.length > 5 ? "\u2026" : ""}). You can apply the repair at your own risk ({ forzar: true }), or send it again so it is checked against the current version.`
   };
 }
 function aplicarReparacion(archivosActuales, resultado, opciones = {}) {
-  if (resultado.status !== "production_ready" || !resultado.files) {
-    throw new Error("Este resultado no trae una reparaci\xF3n para aplicar (solo production_ready devuelve archivos).");
+  if (opciones.archivos?.length) {
+    const ajenos = opciones.archivos.filter((a) => !(resultado.changed_files ?? []).includes(a));
+    if (ajenos.length)
+      throw new Error(`These files are not among the ones Healer changed: ${ajenos.join(", ")}.`);
   }
-  const verificacion = verificarBase(archivosActuales, resultado);
+  if (resultado.status !== "production_ready" && !resultado.partial_fix || !resultado.files) {
+    throw new Error("This result has no repair to apply (only production_ready or a partial delivery return files).");
+  }
+  const aVerificar = opciones.archivos?.length ? { ...resultado, base_hashes: Object.fromEntries(Object.entries(resultado.base_hashes ?? {}).filter(([r]) => opciones.archivos.includes(r))) } : resultado;
+  const verificacion = verificarBase(archivosActuales, aVerificar);
   if (!verificacion.coincide && !opciones.forzar)
     throw new ErrorBaseModificada(verificacion);
   const salida = { ...archivosActuales };
-  for (const ruta of resultado.changed_files ?? []) {
+  const soporte = opciones.incluirSoporte === false ? resultado.support_updates ?? [] : [];
+  const elegidos = opciones.archivos?.length ? opciones.archivos : resultado.changed_files ?? [];
+  for (const ruta of elegidos.filter((r) => !soporte.includes(r))) {
     const reparado = resultado.files[ruta];
     if (reparado !== void 0)
       salida[ruta] = reparado;
@@ -20013,36 +20028,57 @@ async function leerCarpetaComoFiles(carpeta, ignorados, base = carpeta) {
 function leerBooleano(valor) {
   return String(valor || "").trim().toLowerCase() === "true";
 }
-async function escribirResumen(resultado) {
+async function escribirResumen(resultado, soporteAplicado) {
   const filas = [
-    `| Campo | Valor |`,
+    `| Field | Value |`,
     `|---|---|`,
-    `| Estado | ${resultado.status} |`,
-    `| Reparaciones aplicadas | ${resultado.repairs_count} |`,
+    `| Status | ${resultado.status}${resultado.partial_fix ? " (partial delivery)" : ""} |`,
+    ...resultado.failures ? [`| Failures found | ${resultado.failures.found}${resultado.failures.sin_correr ? " (some checks did not run yet)" : ""} |`, `| Failures fixed | ${resultado.failures.fixed} |`] : [],
+    `| Repairs applied | ${resultado.repairs_count} |`,
     // 🧭 [2026-09-30] "unsupported_stack" no trae reportes: se muestra que NO corrió, nunca un 0.
-    `| Puntaje Pent\xE1gono | ${resultado.pentagono_report ? `${resultado.pentagono_report.puntaje}/100${resultado.pentagono_report.critico ? " \u26A0\uFE0F cr\xEDtico" : ""}` : "no se ejecut\xF3"} |`,
-    `| Vulnerabilidades (seguridad) | ${resultado.audit_report ? resultado.audit_report.vulnerabilities_found : "no se ejecut\xF3"} |`,
-    `| Mejoras pendientes (no bloqueantes) | ${resultado.pending_improvements.length} |`
+    `| Quality score | ${resultado.pentagono_report ? `${resultado.pentagono_report.puntaje}/100${resultado.pentagono_report.critico ? " \u26A0\uFE0F critical" : ""}` : "did not run"} |`,
+    `| Security vulnerabilities | ${resultado.audit_report ? resultado.audit_report.vulnerabilities_found : "did not run"} |`,
+    `| Suggested improvements (non-blocking) | ${resultado.pending_improvements.length} |`
   ];
   if (resultado.uso_real_report) {
-    filas.push(`| Uso real | ${resultado.uso_real_report.estado} |`);
+    filas.push(`| Real-use test | ${resultado.uso_real_report.estado} |`);
   }
   if (resultado.cobertura?.stacks?.length) {
-    filas.push(`| Stacks verificados | ${resultado.cobertura.stacks.join(", ")} |`);
+    filas.push(`| Stacks verified | ${resultado.cobertura.stacks.join(", ")} |`);
   }
   if (resultado.cobertura?.lenguajes_no_cubiertos?.length) {
-    filas.push(`| Lenguajes sin verificar | ${resultado.cobertura.lenguajes_no_cubiertos.join(", ")} |`);
+    filas.push(`| Languages not verified | ${resultado.cobertura.lenguajes_no_cubiertos.join(", ")} |`);
   }
   let cuerpo = `## \u{1FA7A} Healer (MEITI)
 
 ${filas.join("\n")}
 `;
-  if (resultado.mensaje) cuerpo += `
-> ${resultado.mensaje}
+  if (resultado.partial_fix) {
+    cuerpo += `
+> **Partial delivery.** ${resultado.failures?.fixed ? `${resultado.failures.fixed} failure(s) fixed` : "An improvement"}, without certifying the code. Nothing was left worse than the original.${resultado.failures?.remaining?.length ? ` ${resultado.failures.remaining.length} failure(s) remain; they already failed in your original code.` : ""}
 `;
+    if (resultado.suite_unverified) cuerpo += `
+> \u26A0\uFE0F The full test suite could not be compared with the original. Run it before merging.
+`;
+  }
+  if (resultado.bloqueado_por_regresion) cuerpo += `
+> The repairs left the code worse than the original, so they were blocked. Your code stays unchanged.
+`;
+  if (resultado.support_updates?.length) {
+    cuerpo += `
+**Support update** (dependency versions so the app runs on the current runtime): ${resultado.support_updates.join(", ")}${soporteAplicado ? "" : " (not written: apply-support-updates is false)"}
+`;
+  }
+  if (resultado.failures?.remaining?.length) {
+    cuerpo += `
+### Failures that remain
+`;
+    for (const falla of resultado.failures.remaining) cuerpo += `- **${falla.origen}**: ${String(falla.detalle).slice(0, 200)}
+`;
+  }
   if (resultado.history.length > 0) {
     cuerpo += `
-### Reparaciones
+### Repairs
 `;
     for (const evento of resultado.history) {
       cuerpo += `- **${evento.file}**: ${evento.error.slice(0, 200)}
@@ -20051,7 +20087,7 @@ ${filas.join("\n")}
   }
   if (resultado.pending_improvements.length > 0) {
     cuerpo += `
-### Mejoras pendientes (no bloquean el build)
+### Suggested improvements (do not block the build)
 `;
     for (const item of resultado.pending_improvements) {
       cuerpo += `- **${item.archivo}**: ${item.diagnostico}
@@ -20076,27 +20112,28 @@ async function main() {
   const port = puertoTexto ? Number(puertoTexto) : void 0;
   const failOn = entrada("fail-on", "HEALER_FAIL_ON") || "unresolved";
   const aiLevel = entrada("ai-level", "HEALER_AI_LEVEL") || "pro";
+  const aplicarSoporte = entrada("apply-support-updates", "HEALER_APPLY_SUPPORT_UPDATES") !== "false";
   const minutosTexto = entrada("timeout-minutes", "HEALER_TIMEOUT_MINUTES");
   const minutos = minutosTexto ? Number(minutosTexto) : aiLevel === "free" ? 60 : 30;
   if (!apiKey) {
-    import_core.default.setFailed('Falta la API key de Healer. Gu\xE1rdala en el repo como secreto (Settings \u2192 Secrets and variables \u2192 Actions, por ejemplo HEALER_API_KEY) y p\xE1sala en "api-key". Si el workflow corre desde el fork de otra persona, GitHub no le entrega los secretos.');
+    import_core.default.setFailed(`Missing the Healer API key. Save it in the repo as a secret (Settings \u2192 Secrets and variables \u2192 Actions, for example HEALER_API_KEY) and pass it in "api-key". If the workflow runs from someone else's fork, GitHub does not hand it the secrets.`);
     return;
   }
   if (!Number.isFinite(minutos) || minutos <= 0) {
-    import_core.default.setFailed(`"timeout-minutes" tiene que ser un n\xFAmero de minutos (vino "${minutosTexto}").`);
+    import_core.default.setFailed(`"timeout-minutes" must be a number of minutes (got "${minutosTexto}").`);
     return;
   }
   if (!["free", "pro"].includes(aiLevel)) {
-    import_core.default.setFailed(`"ai-level" tiene que ser "free" o "pro" (vino "${aiLevel}").`);
+    import_core.default.setFailed(`"ai-level" must be "free" or "pro" (got "${aiLevel}").`);
     return;
   }
-  import_core.default.info(`Healer: juntando archivos de "${carpetaObjetivo}"...`);
+  import_core.default.info(`Healer: collecting files from "${carpetaObjetivo}"...`);
   const ignorados = await leerGitignoreSimple(carpetaObjetivo);
   const files = await leerCarpetaComoFiles(carpetaObjetivo, ignorados);
   const cantidadArchivos = Object.keys(files).length;
-  import_core.default.info(`Healer: ${cantidadArchivos} archivo(s) encontrados. Enviando a Healer (appId="${appId}")...`);
+  import_core.default.info(`Healer: ${cantidadArchivos} file(s) found. Sending to Healer (appId="${appId}")...`);
   if (cantidadArchivos === 0) {
-    import_core.default.setFailed('No se encontr\xF3 ning\xFAn archivo de texto para enviar (\xBF"path" apunta a la carpeta correcta?).');
+    import_core.default.setFailed('No text files found to send. Does "path" point to the right folder?');
     return;
   }
   const healer = new HealerClient({ apiKey, baseUrl, timeoutMs: minutos * 60 * 1e3 });
@@ -20105,58 +20142,63 @@ async function main() {
     resultado = await healer.repair({ files, appId, appIntent, maxIterations, testUsoReal, startCommand, port, aiLevel });
   } catch (error) {
     if (error instanceof HealerApiError) {
-      import_core.default.setFailed(`Healer devolvi\xF3 un error (HTTP ${error.status}): ${error.message}`);
+      import_core.default.setFailed(`Healer returned an error (HTTP ${error.status}): ${error.message}`);
     } else if (error instanceof HealerTimeoutError) {
-      const texto = `Healer no termin\xF3 en ${minutos} minutos; el job sigue y su resultado queda en el panel de Healer. ${error.message}`;
+      const texto = `Healer did not finish in ${minutos} minutes. The job keeps running and its result stays in the Healer panel. ${error.message}`;
       if (failOn === "never") import_core.default.warning(texto);
       else import_core.default.setFailed(texto);
     } else {
-      import_core.default.setFailed(`Fallo inesperado llamando a Healer: ${error.message}`);
+      import_core.default.setFailed(`Unexpected failure calling Healer: ${error.message}`);
     }
     return;
   }
   let cambiados = [];
   if (resultado.files) {
     try {
-      const reparada = aplicarReparacion(files, resultado);
-      cambiados = resultado.changed_files || [];
+      const reparada = aplicarReparacion(files, resultado, { incluirSoporte: aplicarSoporte });
+      const soporte = aplicarSoporte ? [] : resultado.support_updates || [];
+      cambiados = (resultado.changed_files || []).filter((r) => !soporte.includes(r));
+      if (soporte.length) import_core.default.info(`Support update not written (apply-support-updates: false): ${soporte.join(", ")}`);
       for (const rutaRelativaArchivo of cambiados) {
         const rutaAbsoluta = path.resolve(carpetaObjetivo, rutaRelativaArchivo);
         if (!rutaAbsoluta.startsWith(path.resolve(carpetaObjetivo) + path.sep)) {
-          import_core.default.warning(`"${rutaRelativaArchivo}" cae fuera de la carpeta del repo: no se escribe.`);
+          import_core.default.warning(`"${rutaRelativaArchivo}" falls outside the repo folder: not written.`);
           continue;
         }
         await fs.writeFile(rutaAbsoluta, reparada[rutaRelativaArchivo], "utf8").catch((error) => {
-          import_core.default.warning(`No se pudo escribir "${rutaRelativaArchivo}" de vuelta al workspace: ${error.message}`);
+          import_core.default.warning(`Could not write "${rutaRelativaArchivo}" back to the workspace: ${error.message}`);
         });
       }
     } catch (error) {
-      if (error instanceof ErrorBaseModificada) import_core.default.warning(`No se aplic\xF3 la reparaci\xF3n: ${error.message}`);
+      if (error instanceof ErrorBaseModificada) import_core.default.warning(`The repair was not applied: ${error.message}`);
       else throw error;
     }
   }
   if (resultado.bloqueado_por_regresion) {
-    import_core.default.warning(resultado.mensaje || "Las reparaciones dejaban el c\xF3digo peor que el original: quedaron bloqueadas y el c\xF3digo queda igual.");
+    import_core.default.warning("The repairs left the code worse than the original, so they were blocked. Your code stays unchanged.");
   }
   import_core.default.setOutput("changed-files", cambiados.join("\n"));
   import_core.default.setOutput("status", resultado.status);
   import_core.default.setOutput("repairs-count", String(resultado.repairs_count));
   import_core.default.setOutput("pentagono-score", resultado.pentagono_report ? String(resultado.pentagono_report.puntaje) : "");
   import_core.default.setOutput("app-id", appId || "");
-  await escribirResumen(resultado);
-  import_core.default.info(`Healer: terminado \u2014 status=${resultado.status}, reparaciones=${resultado.repairs_count}, pent\xE1gono=${resultado.pentagono_report ? `${resultado.pentagono_report.puntaje}/100` : "no se ejecut\xF3"}`);
+  import_core.default.setOutput("partial-fix", resultado.partial_fix ? "true" : "false");
+  import_core.default.setOutput("failures-found", resultado.failures ? String(resultado.failures.found) : "");
+  import_core.default.setOutput("failures-fixed", resultado.failures ? String(resultado.failures.fixed) : "");
+  await escribirResumen(resultado, aplicarSoporte);
+  import_core.default.info(`Healer: done. status=${resultado.status}${resultado.partial_fix ? " (partial)" : ""}, repairs=${resultado.repairs_count}, quality=${resultado.pentagono_report ? `${resultado.pentagono_report.puntaje}/100` : "did not run"}`);
   if (resultado.cobertura?.lenguajes_no_cubiertos?.length) {
-    import_core.default.warning(`Healer no verific\xF3: ${resultado.cobertura.lenguajes_no_cubiertos.join(", ")}. Esa parte del c\xF3digo no est\xE1 cubierta por este resultado.`);
+    import_core.default.warning(`Healer did not verify: ${resultado.cobertura.lenguajes_no_cubiertos.join(", ")}. That part of the code is not covered by this result.`);
   }
   if (failOn === "unresolved" && resultado.status === "unresolved") {
-    import_core.default.setFailed("Healer no pudo dejar el c\xF3digo production_ready dentro del l\xEDmite de iteraciones.");
+    import_core.default.setFailed(resultado.partial_fix ? `Partial delivery: ${cambiados.length} repaired file(s) written to the workspace, but some failures remain (they already failed in your original code). See the job summary.` : "Healer could not leave the code production_ready within the iteration limit.");
   }
   if (failOn === "unresolved" && resultado.status === "unsupported_stack") {
-    import_core.default.setFailed(resultado.mensaje || "Healer todav\xEDa no soporta el lenguaje de este c\xF3digo: no se verific\xF3 nada.");
+    import_core.default.setFailed("Healer does not support the language of this code yet: nothing was verified.");
   }
 }
 main().catch((error) => {
-  import_core.default.setFailed(`Fallo inesperado en la Action de Healer: ${error.message}`);
+  import_core.default.setFailed(`Unexpected failure in the Healer Action: ${error.message}`);
 });
 /*! Bundled license information:
 

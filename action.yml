@@ -1,5 +1,5 @@
 name: 'Healer (MEITI)'
-description: 'Corre el pipeline de calidad de MEITI (auditoría de código, Pentágono, reparación con IA) sobre tu repo, como paso de CI.'
+description: 'Repairs your code in CI and returns it repaired or unchanged, never worse. Tests in a sandbox, security audit, AI review and real-use testing.'
 author: 'MEITI'
 branding:
   icon: 'shield'
@@ -10,64 +10,74 @@ inputs:
     # 🩹 [BUG REAL, 2026-10-07, primera corrida en GitHub] Sin "${{ }}" en ninguna descripción: GitHub
     # evalúa las expresiones también acá y rechaza la Action entera al cargarla ("Unrecognized
     # named-value: 'secrets'"). En local no se ve, porque el runner es el que lee este archivo.
-    description: 'API key de Healer. Nunca la escribas en el workflow: guárdala como GitHub Secret (por ejemplo HEALER_API_KEY) y pásala desde ahí.'
+    description: 'Healer API key. Never write it in the workflow: save it as a GitHub secret (for example HEALER_API_KEY) and pass it from there.'
     required: true
   path:
-    description: 'Carpeta a enviar (relativa al checkout). Default: todo el repo.'
+    description: 'Folder to send, relative to the checkout. Default: the whole repo.'
     required: false
     default: '.'
   app-id:
-    description: 'Identificador de esta app para Sanador — acumula historial entre corridas. Default: "<owner>/<repo>" del propio repositorio.'
+    description: 'Id of this app in Healer, to keep history across runs. Default: "<owner>/<repo>" of this repository.'
     required: false
     default: ''
   app-intent:
-    description: 'Descripción breve de qué hace la app (opcional, mejora la prueba de uso real si está activada).'
+    description: 'Short description of what the app does (optional, improves the real-use test).'
     required: false
     default: ''
   max-iterations:
-    description: 'Tope de vueltas de reparación por corrida.'
+    description: 'Maximum repair rounds per run.'
     required: false
     default: '8'
   test-uso-real:
-    description: '"true" para además correr una sesión real de uso (Puppeteer + IA) sobre la app ya reparada.'
+    description: '"true" to also run a real-use test on the repaired app.'
     required: false
     default: 'false'
   start-command:
-    description: 'Comando para arrancar el servidor de desarrollo (obligatorio la primera vez que se usa test-uso-real para esta app-id).'
+    description: 'Command that starts the dev server (required the first time test-uso-real is used for this app-id).'
     required: false
     default: ''
   port:
-    description: 'Puerto donde ese comando sirve la app (obligatorio junto con start-command).'
+    description: 'Port where that command serves the app (required together with start-command).'
     required: false
     default: ''
   ai-level:
-    description: '"pro" (default) repara con las APIs pagas (Claude / Gemini Pro). "free" usa la cadena de proveedores gratis (Groq, NVIDIA y Gemini): sin costo de IA, más lento y menos preciso en código difícil. En "free" el código puede reusarse para reentrenar los modelos de MEITI y de esos proveedores; para código privado, "pro".'
+    description: '"pro" (default) repairs with paid APIs. "free" uses a chain of free-tier providers: no AI cost, slower and less accurate on hard code. On "free" the code may be reused to retrain the models of MEITI and of those providers; for private code, use "pro".'
     required: false
     default: 'pro'
   timeout-minutes:
-    description: 'Cuántos minutos esperar el resultado. Default: 60 con ai-level "free", 30 con "pro". Si se agota, el job sigue en Healer y su resultado queda en el panel. Dale al job del workflow más tiempo que esto.'
+    description: 'Minutes to wait for the result. Default: 60 with ai-level "free", 30 with "pro". If it runs out, the job keeps going in Healer and its result stays in the panel. Give the workflow job more time than this.'
     required: false
     default: ''
   fail-on:
-    description: '"unresolved" (default) marca el paso como fallido si Sanador no pudo dejar el código limpio o si el lenguaje no está soportado (unsupported_stack). "never" nunca falla el paso — útil para correr solo informativo.'
+    description: '"unresolved" (default) fails the step if Healer could not leave the code clean (also on a partial delivery) or the language is not supported (unsupported_stack). "never" never fails the step, to only report.'
     required: false
     default: 'unresolved'
+  apply-support-updates:
+    description: 'If Healer had to raise dependency versions so the app runs on the current runtime (a support update), "true" (default) writes them with the repair. "false" writes only the bug repair.'
+    required: false
+    default: 'true'
   base-url:
-    description: 'URL del servidor de Healer. Solo cambiarla para apuntar a una instancia propia.'
+    description: 'Healer server URL. Change it only to point to your own instance.'
     required: false
     default: 'https://healer-api.meiti.dev'
 
 outputs:
   status:
-    description: '"production_ready", "unresolved" o "unsupported_stack".'
+    description: '"production_ready", "unresolved" or "unsupported_stack".'
   repairs-count:
-    description: 'Cantidad de parches reales aplicados.'
+    description: 'Number of repairs actually applied.'
   pentagono-score:
-    description: 'Puntaje 0-100 del Pentágono genérico.'
+    description: 'Quality (Pentágono) score, 0 to 100.'
   changed-files:
-    description: 'Archivos que Healer reparó y se escribieron en el workspace, uno por línea. Vacío si no hubo cambios o si el resultado quedó bloqueado.'
+    description: 'Files Healer repaired and wrote to the workspace, one per line. Empty if nothing changed or the result was blocked.'
   app-id:
-    description: 'El app-id usado — guárdalo si no lo declaraste tú, para reenvíos futuros de esta misma app.'
+    description: 'The app-id used. Keep it if you did not set one, for future runs of the same app.'
+  partial-fix:
+    description: '"true" when some failures were fixed and others remain: status "unresolved", repaired files written.'
+  failures-found:
+    description: 'Failures found.'
+  failures-fixed:
+    description: 'Failures fixed.'
 
 # Action de Node empaquetada (dist/index.mjs, con el SDK adentro): no instala nada al correr.
 # Después de cambiar src/ o el SDK: npm run build, y commitear dist/.
