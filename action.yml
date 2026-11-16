@@ -41,9 +41,13 @@ inputs:
     required: false
     default: ''
   ai-level:
-    description: '"pro" (default) repairs with paid APIs. "free" uses a chain of free-tier providers: no AI cost, slower and less accurate on hard code. On "free" the code may be reused to retrain the models of MEITI and of those providers; for private code, use "pro".'
+    description: 'Leave it empty to use your organization rule in the Healer panel (pro unless the owner changed it). "pro" repairs with paid APIs. "free" uses free-tier providers, which may keep what they receive, and the code may be used for training.'
     required: false
-    default: 'pro'
+    default: ''
+  allow-free:
+    description: 'Free never runs hidden: when a job would run on free (you asked for it, or the pro repairs of the plan are used up) and the organization asks for confirmation, the run checks without repairing and without AI and says so. Set "true" to confirm free for this workflow.'
+    required: false
+    default: 'false'
   timeout-minutes:
     description: 'Minutes to wait for the result. Default: 60 with ai-level "free", 30 with "pro". If it runs out, the job keeps going in Healer and its result stays in the panel. Give the workflow job more time than this.'
     required: false
@@ -78,6 +82,14 @@ outputs:
     description: 'Failures found.'
   failures-fixed:
     description: 'Failures fixed.'
+  target-tests:
+    description: 'Whether your tests pass with what is delivered: pass, fail, did_not_run, not_reached, none or unknown.'
+  tests-failing-before:
+    description: 'Failing tests in your original code (empty if they could not be counted).'
+  tests-failing-after:
+    description: 'Failing tests with what is delivered (empty if they could not be counted).'
+  pending-count:
+    description: 'Items left pending, each explained in the job summary with what it needs.'
 
 # Action de Node empaquetada (dist/index.mjs, con el SDK adentro): no instala nada al correr.
 # Después de cambiar src/ o el SDK: npm run build, y commitear dist/.

@@ -48,7 +48,10 @@ repair.
         with:
           api-key: ${{ secrets.HEALER_API_KEY }}
           ai-level: free
+          allow-free: true   # free never runs hidden: without this, the run checks without repairing and without AI
 ```
+
+Without `ai-level`, your organization rule in the Healer panel applies (pro unless the owner changed it).
 
 - `pro` (default): paid APIs (Claude, Gemini Pro). Most accurate on hard code. Your code is never
   used for training.
@@ -87,7 +90,8 @@ repair.
 | Input | Default | Description |
 |---|---|---|
 | `api-key` | *(required)* | Use a secret, never write it in the YAML. |
-| `ai-level` | `pro` | `free` or `pro`, see above. |
+| `ai-level` | your organization rule (pro) | `free` or `pro`, see above. Empty uses the rule in the Healer panel. |
+| `allow-free` | `false` | Free never runs hidden. When a job would run on free and the organization asks for confirmation, the run checks without repairing and without AI and says so. `true` confirms free for this workflow. |
 | `path` | `.` | Folder to send, relative to the checkout. |
 | `app-id` | `<owner>/<repo>` | Groups runs of the same app to build its history. |
 | `app-intent` | — | Short description of what the app does (improves the real-use test). |
@@ -111,6 +115,10 @@ repair.
 | `partial-fix` | `true` when some failures were fixed and others remain (status `unresolved`, files written). |
 | `failures-found` | Failures found. |
 | `failures-fixed` | Failures fixed. |
+| `target-tests` | Whether your tests pass with what is delivered: `pass`, `fail`, `did_not_run`, `not_reached`, `none` or `unknown`. |
+| `tests-failing-before` | Failing tests in your original code (empty if they could not be counted). |
+| `tests-failing-after` | Failing tests with what is delivered (empty if they could not be counted). |
+| `pending-count` | Items left pending. The job summary explains each one and what it needs. |
 
 ## Español
 
@@ -122,7 +130,7 @@ resultado empeora queda bloqueado en la cuarentena y no se escribe nada.
 2. Guárdala como secreto del repo con el nombre `HEALER_API_KEY`.
 3. Agrega el workflow de arriba (`uses: meiti-dev/healer-action@v1`).
 
-Con `ai-level: free` la IA no tiene costo. En gratis, el código reparado puede reusarse para
+Con `ai-level: free` (y `allow-free: true`, porque free nunca corre escondido) la IA no tiene costo. En gratis, el código reparado puede reusarse para
 reentrenar los modelos de MEITI, y esos proveedores pueden usar lo que reciben; en `pro` tu código
 nunca se usa para entrenar. Para código privado, usa `pro`.
 

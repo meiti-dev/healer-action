@@ -19835,6 +19835,16 @@ var HealerApiError = class extends Error {
     this.body = body;
   }
 };
+var HealerNeedsConfirmationError = class extends Error {
+  reason;
+  options;
+  constructor(body) {
+    super(body?.message || "This job needs the user to confirm the free level.");
+    this.name = "HealerNeedsConfirmationError";
+    this.reason = body?.reason;
+    this.options = Array.isArray(body?.options) ? body.options : ["confirm_free"];
+  }
+};
 var HealerTimeoutError = class extends Error {
   constructor(jobId, timeoutMs) {
     super(`Job "${jobId}" did not finish within ${timeoutMs}ms. Keep polling with getRepair("${jobId}") if you want to wait longer.`);
@@ -19852,7 +19862,9 @@ function cuerpoHttp(request) {
     app_intent: request.appIntent,
     start_command: request.startCommand,
     port: request.port,
-    ai_level: request.aiLevel
+    ai_level: request.aiLevel,
+    confirm_free: request.confirmFree,
+    review_only: request.reviewOnly
   };
 }
 var HealerClient = class {
@@ -19877,10 +19889,17 @@ var HealerClient = class {
     });
     const texto = await respuesta.text();
     const datos = texto ? JSON.parse(texto) : null;
+    if (respuesta.status === 409 && datos?.status === "needs_confirmation")
+      throw new HealerNeedsConfirmationError(datos);
     if (!respuesta.ok) {
       throw new HealerApiError(respuesta.status, datos);
     }
     return datos;
+  }
+  /** The organization rule for the AI level and the pro repairs left this month (no AI, no cost). Check it before sending a job
+   * to know whether it would need the user's yes for free. */
+  async getInfo() {
+    return this.pedir("GET", "/v1/info");
   }
   /** Envía el código y devuelve de inmediato { job_id, app_id, status: "queued" } — sin esperar
    * a que termine. Usar junto a getRepair() para armar tu propio loop de consulta, o preferir
@@ -19896,6 +19915,23 @@ var HealerClient = class {
    * Opcional: sirve para medir qué cambios valen la pena. Healer guarda solo huellas de las rutas, nunca código. */
   async informarDecision(jobId, decision) {
     return this.pedir("POST", `/v1/repair/${encodeURIComponent(jobId)}/decision`, { aplicados: decision.aplicados ?? [], descartados: decision.descartados ?? [], via: "sdk" });
+  }
+  /** 🖥️ Screen review (since 0.3.0): Healer starts the app in its sandbox and checks what each page shows, without repairing
+   * anything and without AI. Waits for the result. On a page that did not load, a "not_exists" expectation answers
+   * CANNOT PROVE, never a false yes. */
+  async reviewScreen(request) {
+    const cuerpo = { ...request.files ? { files: request.files } : {}, ...request.repositoryUrl ? { repository_url: request.repositoryUrl } : {}, ...request.commitSha ? { commit_sha: request.commitSha } : {}, start_command: request.startCommand, port: request.port, pages: request.pages, ...request.appId ? { app_id: request.appId } : {} };
+    const envio = await this.pedir("POST", "/v1/screen", cuerpo);
+    const limite = Date.now() + this.timeoutMs;
+    while (Date.now() < limite) {
+      const estado = await this.pedir("GET", `/v1/repair/${encodeURIComponent(envio.job_id)}`);
+      if (estado.status === "error")
+        throw new HealerApiError(500, { error: estado.error });
+      if (estado.tipo === "pantalla")
+        return estado;
+      await new Promise((resolver) => setTimeout(resolver, this.pollIntervalMs));
+    }
+    throw new HealerTimeoutError(envio.job_id, this.timeoutMs);
   }
   /** Envía el código y ESPERA el resultado final, consultando el estado sola — la forma más
    * simple de usar Healer. Tira HealerApiError si el job termina en "error", o HealerTimeoutError
@@ -20049,10 +20085,26 @@ async function escribirResumen(resultado, soporteAplicado) {
   if (resultado.cobertura?.lenguajes_no_cubiertos?.length) {
     filas.push(`| Languages not verified | ${resultado.cobertura.lenguajes_no_cubiertos.join(", ")} |`);
   }
+  const informe = resultado.report;
+  if (informe) {
+    const n = informe.numbers;
+    const despuesDeFallas = filas.findIndex((f) => f.startsWith("| Repairs applied"));
+    if (n.tests_failing_before !== null && n.tests_failing_after !== null) filas.splice(despuesDeFallas, 0, `| Failing tests (before \u2192 after) | ${n.tests_failing_before} \u2192 ${n.tests_failing_after} |`);
+    if (n.target_tests && n.target_tests !== "unknown") filas.splice(despuesDeFallas, 0, `| Your tests | ${{ pass: "pass", fail: "still fail", did_not_run: "could not run", not_reached: "not reached (an earlier check failed)", none: "none found" }[n.target_tests] || n.target_tests} |`);
+  }
   let cuerpo = `## \u{1FA7A} Healer (MEITI)
 
-${filas.join("\n")}
+${informe ? `${informe.headline}
+
+` : ""}${filas.join("\n")}
 `;
+  if (informe?.pending?.length) {
+    cuerpo += `
+### Pending (what each one needs)
+`;
+    for (const p of informe.pending) cuerpo += `- **${p.check}**: ${p.what} ${p.why} **Needs:** ${p.needs}
+`;
+  }
   if (resultado.partial_fix) {
     cuerpo += `
 > **Partial delivery.** ${resultado.failures?.fixed ? `${resultado.failures.fixed} failure(s) fixed` : "An improvement"}, without certifying the code. Nothing was left worse than the original.${resultado.failures?.remaining?.length ? ` ${resultado.failures.remaining.length} failure(s) remain; they already failed in your original code.` : ""}
@@ -20069,7 +20121,7 @@ ${filas.join("\n")}
 **Support update** (dependency versions so the app runs on the current runtime): ${resultado.support_updates.join(", ")}${soporteAplicado ? "" : " (not written: apply-support-updates is false)"}
 `;
   }
-  if (resultado.failures?.remaining?.length) {
+  if (!informe && resultado.failures?.remaining?.length) {
     cuerpo += `
 ### Failures that remain
 `;
@@ -20111,7 +20163,8 @@ async function main() {
   const puertoTexto = entrada("port", "HEALER_PORT");
   const port = puertoTexto ? Number(puertoTexto) : void 0;
   const failOn = entrada("fail-on", "HEALER_FAIL_ON") || "unresolved";
-  const aiLevel = entrada("ai-level", "HEALER_AI_LEVEL") || "pro";
+  const aiLevel = entrada("ai-level", "HEALER_AI_LEVEL") || void 0;
+  const allowFree = leerBooleano(entrada("allow-free", "HEALER_ALLOW_FREE"));
   const aplicarSoporte = entrada("apply-support-updates", "HEALER_APPLY_SUPPORT_UPDATES") !== "false";
   const minutosTexto = entrada("timeout-minutes", "HEALER_TIMEOUT_MINUTES");
   const minutos = minutosTexto ? Number(minutosTexto) : aiLevel === "free" ? 60 : 30;
@@ -20123,7 +20176,7 @@ async function main() {
     import_core.default.setFailed(`"timeout-minutes" must be a number of minutes (got "${minutosTexto}").`);
     return;
   }
-  if (!["free", "pro"].includes(aiLevel)) {
+  if (aiLevel !== void 0 && !["free", "pro"].includes(aiLevel)) {
     import_core.default.setFailed(`"ai-level" must be "free" or "pro" (got "${aiLevel}").`);
     return;
   }
@@ -20139,7 +20192,13 @@ async function main() {
   const healer = new HealerClient({ apiKey, baseUrl, timeoutMs: minutos * 60 * 1e3 });
   let resultado;
   try {
-    resultado = await healer.repair({ files, appId, appIntent, maxIterations, testUsoReal, startCommand, port, aiLevel });
+    try {
+      resultado = await healer.repair({ files, appId, appIntent, maxIterations, testUsoReal, startCommand, port, aiLevel, confirmFree: allowFree || void 0 });
+    } catch (error) {
+      if (!(error instanceof HealerNeedsConfirmationError)) throw error;
+      import_core.default.warning(`Healer did not use the free level: ${error.message} This run checks without repairing and without AI. To allow free in this workflow, set allow-free: "true".`);
+      resultado = await healer.repair({ files, appId, appIntent, maxIterations, testUsoReal, startCommand, port, reviewOnly: true });
+    }
   } catch (error) {
     if (error instanceof HealerApiError) {
       import_core.default.setFailed(`Healer returned an error (HTTP ${error.status}): ${error.message}`);
@@ -20185,6 +20244,10 @@ async function main() {
   import_core.default.setOutput("partial-fix", resultado.partial_fix ? "true" : "false");
   import_core.default.setOutput("failures-found", resultado.failures ? String(resultado.failures.found) : "");
   import_core.default.setOutput("failures-fixed", resultado.failures ? String(resultado.failures.fixed) : "");
+  import_core.default.setOutput("target-tests", resultado.failures?.target_tests || "");
+  import_core.default.setOutput("tests-failing-before", resultado.failures?.tests_failing_before != null ? String(resultado.failures.tests_failing_before) : "");
+  import_core.default.setOutput("tests-failing-after", resultado.failures?.tests_failing_after != null ? String(resultado.failures.tests_failing_after) : "");
+  import_core.default.setOutput("pending-count", resultado.report ? String(resultado.report.pending.length) : "");
   await escribirResumen(resultado, aplicarSoporte);
   import_core.default.info(`Healer: done. status=${resultado.status}${resultado.partial_fix ? " (partial)" : ""}, repairs=${resultado.repairs_count}, quality=${resultado.pentagono_report ? `${resultado.pentagono_report.puntaje}/100` : "did not run"}`);
   if (resultado.cobertura?.lenguajes_no_cubiertos?.length) {
