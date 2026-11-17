@@ -19864,7 +19864,8 @@ function cuerpoHttp(request) {
     port: request.port,
     ai_level: request.aiLevel,
     confirm_free: request.confirmFree,
-    review_only: request.reviewOnly
+    review_only: request.reviewOnly,
+    bug_report: request.bugReport
   };
 }
 var HealerClient = class {
@@ -19988,6 +19989,16 @@ function verificarBase(archivosActuales, resultado) {
     mensaje: coincide ? "Your code is exactly what was sent for repair: the repair can be applied." : `This code changed after it was sent for repair (${[...modificados, ...faltantes].slice(0, 5).join(", ")}${modificados.length + faltantes.length > 5 ? "\u2026" : ""}). You can apply the repair at your own risk ({ forzar: true }), or send it again so it is checked against the current version.`
   };
 }
+var HealerNeedsAcceptanceError = class extends Error {
+  requiresAcceptance;
+  files;
+  constructor(requiresAcceptance, files) {
+    super(`Needs the user's acceptance before applying: ${requiresAcceptance.reason} Quality score ${requiresAcceptance.pentagono_before} \u2192 ${requiresAcceptance.pentagono_after}. Pass { aceptarPuntajeMenor: true } if they accept, or leave out ${files.join(", ")}.`);
+    this.requiresAcceptance = requiresAcceptance;
+    this.files = files;
+    this.name = "HealerNeedsAcceptanceError";
+  }
+};
 function aplicarReparacion(archivosActuales, resultado, opciones = {}) {
   if (opciones.archivos?.length) {
     const ajenos = opciones.archivos.filter((a) => !(resultado.changed_files ?? []).includes(a));
@@ -20004,6 +20015,10 @@ function aplicarReparacion(archivosActuales, resultado, opciones = {}) {
   const salida = { ...archivosActuales };
   const soporte = opciones.incluirSoporte === false ? resultado.support_updates ?? [] : [];
   const elegidos = opciones.archivos?.length ? opciones.archivos : resultado.changed_files ?? [];
+  const ra = resultado.requires_acceptance;
+  const tocados = ra && !opciones.aceptarPuntajeMenor ? ra.files.filter((r) => elegidos.includes(r) && !soporte.includes(r)) : [];
+  if (ra && tocados.length)
+    throw new HealerNeedsAcceptanceError(ra, tocados);
   for (const ruta of elegidos.filter((r) => !soporte.includes(r))) {
     const reparado = resultado.files[ruta];
     if (reparado !== void 0)
@@ -20113,6 +20128,9 @@ ${informe ? `${informe.headline}
 > \u26A0\uFE0F The full test suite could not be compared with the original. Run it before merging.
 `;
   }
+  if (resultado.requires_acceptance) cuerpo += `
+> \u2696\uFE0F **Needs your acceptance:** ${resultado.requires_acceptance.reason} Quality score ${resultado.requires_acceptance.pentagono_before} \u2192 ${resultado.requires_acceptance.pentagono_after}. Without accept-lower-score: true, ${resultado.requires_acceptance.files.join(", ")} is not written.
+`;
   if (resultado.bloqueado_por_regresion) cuerpo += `
 > The repairs left the code worse than the original, so they were blocked. Your code stays unchanged.
 `;
@@ -20166,6 +20184,7 @@ async function main() {
   const aiLevel = entrada("ai-level", "HEALER_AI_LEVEL") || void 0;
   const allowFree = leerBooleano(entrada("allow-free", "HEALER_ALLOW_FREE"));
   const aplicarSoporte = entrada("apply-support-updates", "HEALER_APPLY_SUPPORT_UPDATES") !== "false";
+  const aceptarPuntajeMenor = leerBooleano(entrada("accept-lower-score", "HEALER_ACCEPT_LOWER_SCORE"));
   const minutosTexto = entrada("timeout-minutes", "HEALER_TIMEOUT_MINUTES");
   const minutos = minutosTexto ? Number(minutosTexto) : aiLevel === "free" ? 60 : 30;
   if (!apiKey) {
@@ -20214,9 +20233,11 @@ async function main() {
   let cambiados = [];
   if (resultado.files) {
     try {
-      const reparada = aplicarReparacion(files, resultado, { incluirSoporte: aplicarSoporte });
       const soporte = aplicarSoporte ? [] : resultado.support_updates || [];
-      cambiados = (resultado.changed_files || []).filter((r) => !soporte.includes(r));
+      const sinAceptar = resultado.requires_acceptance && !aceptarPuntajeMenor ? resultado.requires_acceptance.files : [];
+      cambiados = (resultado.changed_files || []).filter((r) => !soporte.includes(r) && !sinAceptar.includes(r));
+      const reparada = cambiados.length ? aplicarReparacion(files, resultado, { incluirSoporte: aplicarSoporte, archivos: cambiados, aceptarPuntajeMenor }) : files;
+      if (sinAceptar.length) import_core.default.warning(`Not written, needs your acceptance: ${resultado.requires_acceptance.reason} Quality score ${resultado.requires_acceptance.pentagono_before} \u2192 ${resultado.requires_acceptance.pentagono_after}. Set accept-lower-score: true to write ${sinAceptar.join(", ")} too.`);
       if (soporte.length) import_core.default.info(`Support update not written (apply-support-updates: false): ${soporte.join(", ")}`);
       for (const rutaRelativaArchivo of cambiados) {
         const rutaAbsoluta = path.resolve(carpetaObjetivo, rutaRelativaArchivo);

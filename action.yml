@@ -56,6 +56,10 @@ inputs:
     description: '"unresolved" (default) fails the step if Healer could not leave the code clean (also on a partial delivery) or the language is not supported (unsupported_stack). "never" never fails the step, to only report.'
     required: false
     default: 'unresolved'
+  accept-lower-score:
+    description: 'If Healer added a dependency so your tests could run and it lowers the quality score (known vulnerabilities), "false" (default) writes the repair without it and warns; "true" writes it too.'
+    required: false
+    default: 'false'
   apply-support-updates:
     description: 'If Healer had to raise dependency versions so the app runs on the current runtime (a support update), "true" (default) writes them with the repair. "false" writes only the bug repair.'
     required: false
