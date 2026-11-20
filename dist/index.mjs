@@ -20258,7 +20258,8 @@ async function main() {
     import_core.default.warning("The repairs left the code worse than the original, so they were blocked. Your code stays unchanged.");
   }
   import_core.default.setOutput("changed-files", cambiados.join("\n"));
-  import_core.default.setOutput("status", resultado.status);
+  import_core.default.setOutput("status", resultado.not_accepted ? "not_accepted" : resultado.status);
+  import_core.default.setOutput("not-accepted-reason", resultado.not_accepted?.reason ?? "");
   import_core.default.setOutput("repairs-count", String(resultado.repairs_count));
   import_core.default.setOutput("pentagono-score", resultado.pentagono_report ? String(resultado.pentagono_report.puntaje) : "");
   import_core.default.setOutput("app-id", appId || "");
@@ -20273,6 +20274,11 @@ async function main() {
   import_core.default.info(`Healer: done. status=${resultado.status}${resultado.partial_fix ? " (partial)" : ""}, repairs=${resultado.repairs_count}, quality=${resultado.pentagono_report ? `${resultado.pentagono_report.puntaje}/100` : "did not run"}`);
   if (resultado.cobertura?.lenguajes_no_cubiertos?.length) {
     import_core.default.warning(`Healer did not verify: ${resultado.cobertura.lenguajes_no_cubiertos.join(", ")}. That part of the code is not covered by this result.`);
+  }
+  if (resultado.not_accepted) {
+    import_core.default.warning(`Healer did not accept this run: ${resultado.not_accepted.reason}`);
+    if (failOn === "unresolved") import_core.default.setFailed(`Not accepted: ${resultado.not_accepted.reason} Nothing was repaired or verified.`);
+    return;
   }
   if (failOn === "unresolved" && resultado.status === "unresolved") {
     import_core.default.setFailed(resultado.partial_fix ? `Partial delivery: ${cambiados.length} repaired file(s) written to the workspace, but some failures remain (they already failed in your original code). See the job summary.` : "Healer could not leave the code production_ready within the iteration limit.");

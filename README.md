@@ -107,12 +107,13 @@ Without `ai-level`, your organization rule in the Healer panel applies (pro unle
 
 | Output | Description |
 |---|---|
-| `status` | `production_ready`, `unresolved` or `unsupported_stack`. |
+| `status` | `production_ready`, `unresolved`, `unsupported_stack` or `not_accepted`. |
 | `repairs-count` | Number of repairs actually applied. |
 | `changed-files` | Files repaired and written to the workspace, one per line. |
 | `pentagono-score` | Pentágono score, 0 to 100. |
 | `app-id` | The app id used. |
 | `partial-fix` | `true` when some failures were fixed and others remain (status `unresolved`, files written). |
+| `not-accepted-reason` | When `status` is `not_accepted`: why Healer only reviewed and repaired nothing (for example, a dependency that only installs by running a third-party installer, which Healer never does). It does not count as a repair success or failure. |
 | `failures-found` | Failures found. |
 | `failures-fixed` | Failures fixed. |
 | `target-tests` | Whether your tests pass with what is delivered: `pass`, `fail`, `did_not_run`, `not_reached`, `none` or `unknown`. |
