@@ -85,6 +85,11 @@ Without `ai-level`, your organization rule in the Healer panel applies (pro unle
   [`peter-evans/create-pull-request`](https://github.com/peter-evans/create-pull-request), which
   will see the repaired files in the workspace.
 
+- **Large projects.** Code and config files go first (up to 4 MB each), then other text files, then
+  binaries, up to 48 MB per run. Anything that does not fit is listed in the summary ("Files left out of
+  this run") and in the result, never dropped silently. To keep a project's code out of free AI
+  providers for good, add `{ "private": true }` to its `.healer.json`: it then only runs on `pro`.
+
 ## Inputs
 
 | Input | Default | Description |
@@ -137,6 +142,11 @@ nunca se usa para entrenar. Para código privado, usa `pro`.
 
 La Action escribe de vuelta **solo los archivos reparados** y solo si tu checkout sigue siendo el
 código que se mandó. Nunca hace commit ni push: lo que haces con el resultado lo decide tu workflow.
+
+En proyectos grandes entra primero el código (hasta 4 MB por archivo), después los demás textos y al
+final los binarios, hasta 48 MB por corrida. Lo que no entra se lista en el resumen y en el resultado,
+nunca se descarta en silencio. Con `{ "private": true }` en `.healer.json`, el código de ese proyecto
+nunca va a proveedores gratis: solo corre en `pro`.
 
 Si Healer corrige algunas fallas y quedan otras, igual escribe lo reparado (`partial-fix: true`). Nada
 queda peor, y lo que queda ya fallaba en tu código original.

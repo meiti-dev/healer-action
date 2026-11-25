@@ -19854,6 +19854,7 @@ var HealerTimeoutError = class extends Error {
 function cuerpoHttp(request) {
   return {
     files: request.files,
+    binary_files: request.binaryFiles,
     repository_url: request.repositoryUrl,
     commit_sha: request.commitSha,
     app_id: request.appId,
@@ -19865,7 +19866,8 @@ function cuerpoHttp(request) {
     ai_level: request.aiLevel,
     confirm_free: request.confirmFree,
     review_only: request.reviewOnly,
-    bug_report: request.bugReport
+    bug_report: request.bugReport,
+    omitted_files: request.omittedFiles
   };
 }
 var HealerClient = class {
@@ -20056,23 +20058,75 @@ async function leerGitignoreSimple(raiz) {
     return /* @__PURE__ */ new Set();
   }
 }
-async function leerCarpetaComoFiles(carpeta, ignorados, base = carpeta) {
-  const resultado = {};
+var BINARIO_EXCLUIDO = /\.(pyc|pyo|so|dll|dylib|exe|o|a|obj|class|jar|war|whl|egg|mp4|mov|avi|mkv|webm|iso|dmg|7z|rar)$/i;
+var MB = 1024 * 1024;
+var ES_CODIGO = /\.(js|jsx|ts|tsx|mjs|cjs|mts|cts|py|pyi|vue|svelte|json|toml|ya?ml|cfg|ini|sql|sh|css|scss|sass|less|lock)$/i;
+var LOCKFILES = /* @__PURE__ */ new Set(["uv.lock", "poetry.lock", "pdm.lock", "Pipfile.lock", "package-lock.json", "npm-shrinkwrap.json", "yarn.lock", "pnpm-lock.yaml", "bun.lock"]);
+var TOPE_ARCHIVO = 1e6;
+var topeDe = (ruta) => LOCKFILES.has(ruta.split("/").pop()) ? 15 * MB : ES_CODIGO.test(ruta) ? 4 * MB : TOPE_ARCHIVO;
+var TOPE_TOTAL = 48 * MB;
+async function listarArchivos(carpeta, ignorados, base = carpeta, rutas = []) {
   const entradas = await fs.readdir(carpeta, { withFileTypes: true });
   for (const entrada of entradas) {
     if (EXCLUIDOS_SIEMPRE.has(entrada.name) || ignorados.has(entrada.name)) continue;
     const rutaCompleta = path.join(carpeta, entrada.name);
-    if (entrada.isDirectory()) {
-      Object.assign(resultado, await leerCarpetaComoFiles(rutaCompleta, ignorados, base));
-    } else if (entrada.isFile()) {
-      const rutaRelativa = path.relative(base, rutaCompleta).split(path.sep).join("/");
-      try {
-        const contenido = await fs.readFile(rutaCompleta, "utf8");
-        if (contenido.includes("\0")) continue;
-        resultado[rutaRelativa] = contenido;
-      } catch {
+    if (entrada.isDirectory()) await listarArchivos(rutaCompleta, ignorados, base, rutas);
+    else if (entrada.isFile()) rutas.push([path.relative(base, rutaCompleta).split(path.sep).join("/"), rutaCompleta]);
+  }
+  return rutas;
+}
+async function leerCarpetaComoFiles(carpeta, ignorados, base = carpeta, binarios = {}, omitidos = []) {
+  const resultado = {};
+  const textosPendientes = [];
+  const binariosPendientes = [];
+  let total = 0;
+  for (const [ruta, completa] of await listarArchivos(carpeta, ignorados, base)) {
+    try {
+      const info = await fs.stat(completa);
+      if (info.size > Math.max(topeDe(ruta), TOPE_ARCHIVO)) {
+        omitidos.push({ path: ruta, reason: BINARIO_EXCLUIDO.test(ruta) ? "binary_type" : "too_large", bytes: info.size });
+        continue;
       }
+      const buf = await fs.readFile(completa);
+      if (buf.includes(0)) {
+        if (BINARIO_EXCLUIDO.test(ruta)) omitidos.push({ path: ruta, reason: "binary_type", bytes: buf.length });
+        else if (buf.length > TOPE_ARCHIVO) omitidos.push({ path: ruta, reason: "binary_too_large", bytes: buf.length });
+        else binariosPendientes.push([ruta, buf]);
+        continue;
+      }
+      if (buf.length > topeDe(ruta)) {
+        omitidos.push({ path: ruta, reason: "too_large", bytes: buf.length });
+        continue;
+      }
+      if (!ES_CODIGO.test(ruta)) {
+        textosPendientes.push([ruta, buf]);
+        continue;
+      }
+      if (total + buf.length > TOPE_TOTAL) {
+        omitidos.push({ path: ruta, reason: "total_limit", bytes: buf.length });
+        continue;
+      }
+      resultado[ruta] = buf.toString("utf8");
+      total += buf.length;
+    } catch {
     }
+  }
+  for (const [ruta, buf] of textosPendientes) {
+    if (total + buf.length > TOPE_TOTAL) {
+      omitidos.push({ path: ruta, reason: "total_limit", bytes: buf.length });
+      continue;
+    }
+    resultado[ruta] = buf.toString("utf8");
+    total += buf.length;
+  }
+  for (const [ruta, buf] of binariosPendientes) {
+    const b64 = buf.toString("base64");
+    if (total + b64.length > TOPE_TOTAL) {
+      omitidos.push({ path: ruta, reason: "total_limit", bytes: buf.length });
+      continue;
+    }
+    binarios[ruta] = b64;
+    total += b64.length;
   }
   return resultado;
 }
@@ -20088,6 +20142,7 @@ async function escribirResumen(resultado, soporteAplicado) {
     `| Repairs applied | ${resultado.repairs_count} |`,
     // 🧭 [2026-09-30] "unsupported_stack" no trae reportes: se muestra que NO corrió, nunca un 0.
     `| Quality score | ${resultado.pentagono_report ? `${resultado.pentagono_report.puntaje}/100${resultado.pentagono_report.critico ? " \u26A0\uFE0F critical" : ""}` : "did not run"} |`,
+    ...resultado.files_left_out?.length ? [`| Files left out of this run | ${resultado.files_left_out.length} (${resultado.files_left_out.slice(0, 5).map((o) => o.path).join(", ")}${resultado.files_left_out.length > 5 ? ", ..." : ""}) |`] : [],
     `| Security vulnerabilities | ${resultado.audit_report ? resultado.audit_report.vulnerabilities_found : "did not run"} |`,
     `| Suggested improvements (non-blocking) | ${resultado.pending_improvements.length} |`
   ];
@@ -20201,9 +20256,13 @@ async function main() {
   }
   import_core.default.info(`Healer: collecting files from "${carpetaObjetivo}"...`);
   const ignorados = await leerGitignoreSimple(carpetaObjetivo);
-  const files = await leerCarpetaComoFiles(carpetaObjetivo, ignorados);
+  const binaryFiles = {};
+  const omittedFiles = [];
+  const files = await leerCarpetaComoFiles(carpetaObjetivo, ignorados, carpetaObjetivo, binaryFiles, omittedFiles);
   const cantidadArchivos = Object.keys(files).length;
   import_core.default.info(`Healer: ${cantidadArchivos} file(s) found. Sending to Healer (appId="${appId}")...`);
+  if (omittedFiles.length) import_core.default.warning(`Healer: ${omittedFiles.length} file(s) left out of this run (too large, did not fit, or binary): ${omittedFiles.slice(0, 8).map((o) => o.path).join(", ")}${omittedFiles.length > 8 ? ", ..." : ""}. The checks run without them.`);
+  const extra = { ...Object.keys(binaryFiles).length ? { binaryFiles } : {}, ...omittedFiles.length ? { omittedFiles } : {} };
   if (cantidadArchivos === 0) {
     import_core.default.setFailed('No text files found to send. Does "path" point to the right folder?');
     return;
@@ -20212,11 +20271,11 @@ async function main() {
   let resultado;
   try {
     try {
-      resultado = await healer.repair({ files, appId, appIntent, maxIterations, testUsoReal, startCommand, port, aiLevel, confirmFree: allowFree || void 0 });
+      resultado = await healer.repair({ files, ...extra, appId, appIntent, maxIterations, testUsoReal, startCommand, port, aiLevel, confirmFree: allowFree || void 0 });
     } catch (error) {
       if (!(error instanceof HealerNeedsConfirmationError)) throw error;
       import_core.default.warning(`Healer did not use the free level: ${error.message} This run checks without repairing and without AI. To allow free in this workflow, set allow-free: "true".`);
-      resultado = await healer.repair({ files, appId, appIntent, maxIterations, testUsoReal, startCommand, port, reviewOnly: true });
+      resultado = await healer.repair({ files, ...extra, appId, appIntent, maxIterations, testUsoReal, startCommand, port, reviewOnly: true });
     }
   } catch (error) {
     if (error instanceof HealerApiError) {
